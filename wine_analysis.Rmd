@@ -1,0 +1,430 @@
+---
+title: "wine exploration"
+author: "Hanna Matera"
+date: "11/12/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## important links 
+data source :https://www.kaggle.com/zynicide/wine-reviews?select=winemag-data-130k-v2.csv
+
+```{r setup, include=FALSE}
+
+# loading neccessary packages 
+pacman::p_load(tidyverse,wordcloud,RColorBrewer,wordcloud2,tm,viridis,aster,spData,spDataLarge,tmap,leaflet,sf,plyr,Hmisc,ggpubr,highcharter)
+
+
+
+
+#reinstalling some packages- we are gonna need them when creating worldclouds  
+install.packages("devtools")
+library(devtools)
+devtools::install_github("lchiffon/wordcloud2")
+
+
+# reading the files 
+folder <- "/Users/hannamatera/Downloads/archive/"      # path to folder that holds multiple .csv files
+file_list <- list.files(path=folder, pattern="*.csv") # create list of all .csv files in folder
+
+# read in each .csv file in file_list and create a data frame with the same name as the .csv file
+for (i in 1:length(file_list)){
+  assign(file_list[i], 
+  read.csv(paste(folder, file_list[i], sep=''))
+)} 
+
+# deleting unnecesary columns from the second data set,merging two data sets together 
+
+`winemag-data-130k-v2.csv` <- `winemag-data-130k-v2.csv`[c(-10,-11,-12)]
+wine <- rbind(`winemag-data-130k-v2.csv`,`winemag-data_first150k.csv`)
+wine <- na.omit(wine)
+
+
+
+# removing a single row with unclear country name (it doesnt harm the data because there is only one entry for "US-France") + deleting data where the country name is missing 
+wine <- subset(wine,wine$country!="US-France")
+wine <- subset(wine,wine$country!="")
+wine$country[wine$country == "US"] <- "United States of America"
+wine$country[wine$country == "England"] <- "United Kingdom"
+
+```
+
+## data description 
+The dataset consists of over 250,000 wine review entries. Each entry contains the country the wine came from, a description of the wine, the designation (vineyard within the winery where the grapes are from), the number of points WineEnthusiast rated the wine on a scale of 1-100, the price for a bottle of wine, the province or state the wine is from, the region or wine growing area, the variety or type of grape used to make the wine, and, lastly, the winery
+
+# 1st thing to explore : Which countries are the best wines from?
+```{r cars}
+
+# assigning a correct class; summarising which coutry produces the best wine 
+wine$country <- as.factor(wine$country)
+wine$points <- as.numeric(wine$points)
+
+mean_score <- aggregate(wine$points, by=list(wine$country), mean) 
+mean_score <- mean_score %>% top_n(10)
+
+# checking for normal distribution of points
+ggplot(wine, aes(log(points))) + geom_histogram(color="black", fill="white")
+
+# renaming columns
+colnames(mean_score)[1] <- "country"
+colnames(mean_score)[2] <- "score"
+
+
+# graph displaying the countries where the best wine comes from
+
+
+ggplot(data = mean_score, mapping = aes(x = reorder(country,score ),y=score,main="best wine",fill=country)) +geom_bar(stat="identity")+coord_flip(ylim=c(85,92))+scale_fill_brewer(palette = "Paired") 
+  
+
+#looking at the most expensive countries
+mean_price <- aggregate(wine$price, by=list(wine$country), mean) 
+mean_price <- mean_price %>% top_n(10)
+
+# renaming columns
+colnames(mean_price)[1] <- "country"
+colnames(mean_price)[2] <- "price"
+
+# checking for normal distribution 
+ggplot(wine, aes(log(price))) + geom_histogram(color="black", fill="white")
+
+
+# a graph with the top 10 most expensive wines (by country)
+ggplot(data = mean_price, mapping = aes(x = reorder(country, price),y=price,main="most expensive wine",fill=country)) +geom_bar(stat="identity")+coord_flip(ylim=c(30,65))+scale_fill_brewer(
+palette = "Spectral") 
+  
+
+
+ggscatter(wine, x = "points", y = "price", color="red" ,shape=21,
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "points", ylab = "price(US dollars)")
+
+cor.test(wine$price, wine$points, method="pearson") # there is a positive (and signitficant)correlation between th eprice and the quality c = 0.4374798 (~0.44), p-value<0.05
+
+# mean score and mean price
+mean(wine$price)
+mean(wine$points)
+
+## additional inspection of my data :
+#looking at the best wineries
+
+mean_score_winery <- aggregate(wine$points, by=list(wine$winery), mean) 
+mean_score_winery <- mean_score_winery %>% top_n(10)
+levels(mean_score_winery)
+
+#looking at the best regions
+mean_score_region <- aggregate(wine$points, by=list(wine$province), mean) 
+mean_score_region <- mean_score_region %>% top_n(11)
+
+
+```
+
+## 
+```{r}
+
+
+# identifying the 10 most popular wine varieties :
+count_w <- count(wine,"variety") %>% arrange (desc(freq))%>% head(10)
+
+# most popular wines :
+wine_list <- c("Pinot Noir","Chardonnay","Cabernet Sauvignon","Red Blend","Sauvignon Blanc","Riesling","Bordeaux-style Red Blend","Syrah","Merlot","Zinfandel")
+
+pop_wine <- filter(wine,variety%in%wine_list)
+
+# data frames per wine 
+pinot_noir <- filter(wine,variety=="Pinot Noir")
+chardonnay<- filter(wine,variety=="Chardonnay")
+cabernet <- filter(wine,variety=="Cabernet Sauvignon")
+red_blend <- filter(wine,variety=="Red Blend")
+sauvignon_blanc <- filter(wine,variety=="Sauvignon Blanc")
+riesling <- filter(wine,variety=="Riesling")
+bordeaux <- filter(wine,variety=="Bordeaux-style Red Blend")
+syrah <- filter(wine,variety=="Syrah")
+merlot <- filter(wine,variety=="Merlot")
+zinfandel <- filter(wine,variety=="Zinfandel")
+                   
+
+
+#Creating a vector containing only the text for each wine - text corpus, deleting spaces, stop words and numbers + transforming to lower-case:
+
+#pinot noir  
+text_pinot <- pinot_noir$description
+# Create a corpus  
+docs_pinot <- Corpus(VectorSource(text_pinot))
+docs_pinot <- docs_pinot %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_pinot <- tm_map(docs_pinot, content_transformer(tolower))
+docs_pinot <- tm_map(docs_pinot, removeWords, stopwords("english"))
+dtm_pinot <- TermDocumentMatrix(docs_pinot) 
+matrix_pinot <- as.matrix(dtm_pinot) 
+words_pinot <- sort(rowSums(matrix_pinot),decreasing=TRUE) 
+df_pinot <- data.frame(word = names(words_pinot),freq=words_pinot)
+
+
+# chardonnay
+
+text_chardonnay <- chardonnay$description
+# Create a corpus  
+docs_chardonnay <- Corpus(VectorSource(text_chardonnay))
+docs_chardonnay <- docs_chardonnay %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_chardonnay <- tm_map(docs_chardonnay, content_transformer(tolower))
+docs_chardonnay <- tm_map(docs_chardonnay, removeWords, stopwords("english"))
+dtm_chardonnay <- TermDocumentMatrix(docs_chardonnay) 
+matrix_chardonnay <- as.matrix(dtm_chardonnay) 
+words_chardonnay <- sort(rowSums(matrix_chardonnay),decreasing=TRUE) 
+df_chardonnay <- data.frame(word = names(words_chardonnay),freq=words_chardonnay)
+
+
+# cabernet sauvignon
+
+text_cabernet <- cabernet$description
+# Create a corpus  
+docs_cabernet <- Corpus(VectorSource(text_cabernet))
+docs_cabernet <- docs_cabernet %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_cabernet <- tm_map(docs_cabernet, content_transformer(tolower))
+docs_cabernet <- tm_map(docs_cabernet, removeWords, stopwords("english"))
+dtm_cabernet <- TermDocumentMatrix(docs_cabernet) 
+matrix_cabernet <- as.matrix(dtm_cabernet) 
+words_cabernet <- sort(rowSums(matrix_cabernet),decreasing=TRUE) 
+df_cabernet <- data.frame(word = names(words_cabernet),freq=words_cabernet)
+
+# red blend
+
+text_rblend <- red_blend$description
+# Create a corpus  
+docs_rblend <- Corpus(VectorSource(text_rblend ))
+docs_rblend <- docs_rblend %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_rblend <- tm_map(docs_rblend, content_transformer(tolower))
+docs_rblend <- tm_map(docs_rblend, removeWords, stopwords("english"))
+dtm_rblend <- TermDocumentMatrix(docs_rblend) 
+matrix_rblend <- as.matrix(dtm_rblend) 
+words_rblend <- sort(rowSums(matrix_rblend),decreasing=TRUE) 
+df_rblend <- data.frame(word = names(words_rblend),freq=words_rblend)
+
+
+
+# sauvignon blanc
+
+text_sauvignon <- sauvignon_blanc$description
+# Create a corpus  
+docs_sauvignon <- Corpus(VectorSource(text_sauvignon ))
+docs_sauvignon <- docs_sauvignon %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_sauvignon <- tm_map(docs_sauvignon, content_transformer(tolower))
+docs_sauvignon <- tm_map(docs_sauvignon, removeWords, stopwords("english"))
+dtm_sauvignon <- TermDocumentMatrix(docs_sauvignon) 
+matrix_sauvignon <- as.matrix(dtm_sauvignon) 
+words_sauvignon <- sort(rowSums(matrix_sauvignon),decreasing=TRUE) 
+df_sauvignon <- data.frame(word = names(words_sauvignon),freq=words_sauvignon)
+
+# riesling
+
+text_riesling <- riesling$description
+# Create a corpus  
+docs_riesling <- Corpus(VectorSource(text_riesling ))
+docs_riesling <- docs_riesling %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_riesling <- tm_map(docs_riesling, content_transformer(tolower))
+docs_riesling <- tm_map(docs_riesling, removeWords, stopwords("english"))
+dtm_riesling <- TermDocumentMatrix(docs_riesling) 
+matrix_riesling <- as.matrix(dtm_riesling) 
+words_riesling <- sort(rowSums(matrix_riesling),decreasing=TRUE) 
+df_riesling <- data.frame(word = names(words_riesling),freq=words_riesling)
+
+
+#bordeaux 
+text_bordeaux <- bordeaux$description
+# Create a corpus  
+docs_bordeaux <- Corpus(VectorSource(text_bordeaux))
+docs_bordeaux <- docs_bordeaux %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_bordeaux <- tm_map(docs_bordeaux, content_transformer(tolower))
+docs_bordeaux <- tm_map(docs_bordeaux, removeWords, stopwords("english"))
+dtm_bordeaux <- TermDocumentMatrix(docs_bordeaux) 
+matrix_bordeaux <- as.matrix(dtm_bordeaux) 
+words_bordeaux <- sort(rowSums(matrix_bordeaux),decreasing=TRUE) 
+df_bordeaux <- data.frame(word = names(words_bordeaux),freq=words_bordeaux)
+
+#syrah 
+text_syrah <- syrah$description
+# Create a corpus  
+docs_syrah <- Corpus(VectorSource(text_syrah))
+docs_syrah <- docs_syrah %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_syrah <- tm_map(docs_syrah, content_transformer(tolower))
+docs_syrah <- tm_map(docs_syrah, removeWords, stopwords("english"))
+dtm_syrah <- TermDocumentMatrix(docs_syrah) 
+matrix_syrah <- as.matrix(dtm_syrah) 
+words_syrah <- sort(rowSums(matrix_syrah),decreasing=TRUE) 
+df_syrah <- data.frame(word = names(words_syrah),freq=words_syrah)
+
+#merlot 
+text_merlot <- merlot$description
+# Create a corpus  
+docs_merlot <- Corpus(VectorSource(text_merlot))
+docs_merlot <- docs_merlot %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_merlot <- tm_map(docs_merlot, content_transformer(tolower))
+docs_merlot <- tm_map(docs_merlot, removeWords, stopwords("english"))
+dtm_merlot <- TermDocumentMatrix(docs_merlot) 
+matrix_merlot <- as.matrix(dtm_merlot) 
+words_merlot <- sort(rowSums(matrix_merlot),decreasing=TRUE) 
+df_merlot <- data.frame(word = names(words_merlot),freq=words_merlot)
+
+#zinfandel 
+text_zinfandel <- zinfandel$description
+# Create a corpus  
+docs_zinfandel <- Corpus(VectorSource(text_zinfandel))
+docs_zinfandel <- docs_zinfandel %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+
+docs_zinfandel <- tm_map(docs_zinfandel, content_transformer(tolower))
+docs_zinfandel <- tm_map(docs_zinfandel, removeWords, stopwords("english"))
+dtm_zinfandel <- TermDocumentMatrix(docs_zinfandel) 
+matrix_zinfandel <- as.matrix(dtm_zinfandel) 
+words_zinfandel <- sort(rowSums(matrix_zinfandel),decreasing=TRUE) 
+df_zinfandel <- data.frame(word = names(words_zinfandel),freq=words_zinfandel)
+
+
+# generating a wordcloud
+
+# removing words that do not fit (verbs, obvious words)
+# I am creating a list of words that do not fit to the wordcloud (too obvious, too generic)
+frequent_words <- c("wine","drink","feel","champagne","-","la","flavors","now","pinot","finish","bottle","just","years","still","also","will","gives","mouth","feel","like","give","end","one","almost","much","many","along","chardonnay","cabernet","|","shows","zin","alcohol","finish","like","high","now","shows","will","big","well","almost","just","flavors","merlot","now","bit","noir","red","aromas","yet","theres","next","vineyard","notes","offers","wines","new","good","develop","way","blend","sauvignon","syrah","opens","delivers","slightly","made","make","ready","riesling","finishes","bordeaux","merlot","zinfandel","-","bordeauxstyle","little","nose","thats","structure","tastes","enough","character","best","long","touch","franc","lots")
+
+# I am filtering them out 
+df_pinot<-df_pinot[!(df_pinot$word %in% frequent_words),]
+df_chardonnay<-df_chardonnay[!(df_chardonnay$word %in% frequent_words),]
+df_cabernet<-df_cabernet[!(df_cabernet$word %in% frequent_words),]
+df_rblend<-df_rblend[!(df_rblend$word %in% frequent_words),]
+df_sauvignon<-df_sauvignon[!(df_sauvignon$word %in% frequent_words),]
+df_riesling<-df_riesling[!(df_riesling$word %in% frequent_words),]
+df_bordeaux<-df_bordeaux[!(df_bordeaux$word %in% frequent_words),]
+df_syrah<-df_syrah[!(df_syrah$word %in% frequent_words),]
+df_merlot<-df_merlot[!(df_merlot$word %in% frequent_words),]
+df_zinfandel<-df_zinfandel[!(df_zinfandel$word %in% frequent_words),]
+
+
+# generating a word cloud of 100 most frequent words used to describe a given kind of wine 
+# set.seed(1234)  for reproducibility
+
+wordcloud(words = df_pinot$word, freq = df_pinot$freq, min.freq = 1,
+          max.words=100, random.order=FALSE, rot.per=0.35, colors=viridis_pal(option = "plasma")(100))
+
+
+
+
+```
+
+# Word clouds 
+```{r}
+
+# letter clouds for each wine (initials)
+letterCloud(data=df_pinot, "PN",wordSize = 1, size = 2,color = "yellow")
+letterCloud(data=df_chardonnay, "CH",wordSize = 1, size = 2,color = "pink")
+letterCloud(data=df_cabernet, "CS",wordSize = 1, size = 2,color = "maroon")
+letterCloud(data=df_rblend, "RB",wordSize = 1, size = 2,color = "orange")
+letterCloud(data=df_sauvignon, "SB",wordSize = 1, size = 2,color = "dodgerblue")
+letterCloud(data=df_riesling, "R",wordSize = 1, size = 2,color = "green")
+letterCloud(data=df_bordeaux, "BX",wordSize = 1, size = 2,color = "tomato")
+letterCloud(data=df_syrah, "SH",wordSize = 1, size = 2,color = "skyblue")
+letterCloud(data=df_merlot, "M",wordSize = 1, size = 2,color = "palegreen")
+letterCloud(data=df_zinfandel, "ZN",wordSize = 1, size = 2,color = "red")
+
+
+```
+
+
+Crating interactive maps- that answer questions:
+1) where does the best wine come from?
+2)Where does the most expensive wine come from ?
+3)Is there a correlation between the quality and the price ?
+```{r}
+
+# mean wine score by country - renaming columns
+mean_score_by_country <- aggregate(wine$points, by=list(wine$country), mean) 
+colnames(mean_score_by_country)[1] <- "country"
+colnames(mean_score_by_country)[2] <- "points"
+
+# preparing data needed for making the maps 
+data(worldgeojson, package = "highcharter")
+data(mean_score_by_country)
+options(highcharter.theme = hc_theme_smpl(tooltip = list(valueDecimals = 2)))
+
+
+
+# rounding thes score to 2 decimals 
+
+mean_score_by_country$points <- round(mean_score_by_country$points,2)
+
+#creating an interactive map displaying countries with the mean scores of wine
+best_wine <- highchart() %>%
+  hc_add_series_map(
+    worldgeojson, mean_score_by_country, value = "points", joinBy =c("name",'country'),
+    name = "Mean score"
+    )  %>% 
+  hc_colorAxis( min = 80, max = 92,minColor="pink",maxColor="#B2001B") %>% 
+  hc_title(text = "World Map") %>% 
+  hc_subtitle(text = "Best Wine in the World")
+
+
+best_wine
+
+#expensive wine 
+mean_price_by_country <- aggregate(wine$price, by=list(wine$country), mean) 
+colnames(mean_price_by_country)[1] <- "country"
+colnames(mean_price_by_country)[2] <- "price"
+
+# rounding thes score to 2 decimals 
+
+mean_price_by_country$price <- round(mean_price_by_country$price,2)
+
+# the same interactive map - here displaying the mean price for wine per country
+expensive_wine <- highchart() %>%
+  hc_add_series_map(
+    worldgeojson, mean_price_by_country, value = "price", joinBy =c("name",'country'),
+    name = "Mean price"
+    )  %>% 
+  hc_colorAxis( min = 10, max = 65,minColor="yellow",maxColor="red") %>% 
+  hc_title(text = "World Map") %>% 
+  hc_subtitle(text = "Most Expensive Wine in the World")
+
+expensive_wine
+
+
+```
+
+
